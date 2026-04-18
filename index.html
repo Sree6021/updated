@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>BM Wayfinder | Final HD Edition</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
+    <style>
+        :root { 
+            --bm-red: #c0392b; --bm-blue: #2980b9; --bm-green: #27ae60; --bm-gold: #d4af37;
+            --glass: rgba(255, 255, 255, 0.98); --dark: #1a1a1a; 
+        }
+        * { box-sizing: border-box; outline: none; -webkit-tap-highlight-color: transparent; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fff; position: fixed; }
+
+        /* Landing Screen */
+        #landing { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; background: #000; color: white; text-align: center; }
+        .btn-start { background: var(--bm-red); color: white; border: none; padding: 20px 60px; border-radius: 50px; font-weight: 900; font-size: 1.2rem; cursor: pointer; margin-top: 25px; box-shadow: 0 10px 30px rgba(192, 57, 43, 0.4); }
+
+        /* UI Overlays */
+        #map-ui { display: none; position: fixed; inset: 0; z-index: 50; pointer-events: none; }
+        .overlay { pointer-events: auto; background: var(--glass); backdrop-filter: blur(15px); border-radius: 20px; box-shadow: 0 8px 30px rgba(0,0,0,0.15); position: absolute; }
+        
+        /* Search & Floor Selection */
+        .search-panel { top: env(safe-area-inset-top, 15px); left: 10px; right: 10px; padding: 15px; border-top: 6px solid var(--dark); }
+        #search-input { width: 100%; padding: 14px; border-radius: 12px; border: 1px solid #ddd; margin-bottom: 8px; font-size: 16px; font-weight: 600; }
+        #destination { width: 100%; padding: 14px; border-radius: 12px; border: 1px solid #ddd; background: #fff; font-size: 16px; font-weight: 700; }
+
+        /* Multi-Step Instruction HUD */
+        #nav-hud {
+            position: absolute; top: 185px; left: 50%; transform: translateX(-50%);
+            background: var(--dark); color: white; padding: 15px 22px; border-radius: 15px;
+            font-weight: 700; text-align: center; width: 92%; display: none;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.4); border-left: 6px solid var(--bm-gold);
+            font-size: 0.85rem; z-index: 100; line-height: 1.4;
+        }
+
+        /* Mobile Controls */
+        .controls { position: absolute; right: 15px; top: 185px; display: flex; flex-direction: column; gap: 12px; pointer-events: auto; }
+        .circle-btn { width: 55px; height: 55px; border-radius: 50%; background: white; border: none; box-shadow: 0 5px 15px rgba(0,0,0,0.2); font-size: 1.4rem; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .circle-btn.active { background: var(--bm-blue); color: white; }
+
+        /* Bottom Stats & Floor Legend */
+        .nav-card { bottom: env(safe-area-inset-bottom, 20px); left: 50%; transform: translateX(-50%); width: 94%; padding: 15px; text-align: center; }
+        #meters { font-size: 3.2rem; font-weight: 900; color: var(--bm-red); line-height: 1; display: block; letter-spacing: -2px; }
+        
+        .floor-legend { display: flex; justify-content: center; gap: 10px; margin-top: 10px; }
+        .floor-dot { padding: 4px 10px; border-radius: 20px; font-size: 0.6rem; font-weight: 900; color: white; text-transform: uppercase; }
+
+        /* World Labels */
+        .world-label { position: absolute; font-size: 9px; font-weight: 900; background: white; padding: 2px 6px; border-radius: 4px; border: 1px solid #ccc; transform: translate(-50%, -50%); white-space: nowrap; pointer-events: none; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        #canvas-container { position: absolute; inset: 0; z-index: 10; background: #fdfdfd; }
+    </style>
+</head>
+<body>
+
+    <div id="landing">
+        <h1 style="letter-spacing: 10px; font-size: 2.2rem; margin: 0;">BRITISH MUSEUM</h1>
+        <p style="color: var(--bm-red); font-weight: 700;">OFFICIAL NAVIGATOR HD</p>
+        <button class="btn-start" onclick="enterMuseum()">START GUIDED TOUR</button>
+    </div>
+
+    <div id="map-ui">
+        <div id="nav-hud">PLEASE SELECT A DESTINATION</div>
+
+        <div class="overlay search-panel">
+            <input type="text" id="search-input" placeholder="🔍 Search galleries..." oninput="filterRooms(this.value)">
+            <select id="destination" onchange="handleRoomSelect(this.value)">
+                <option value="">-- Choose Destination --</option>
+            </select>
+        </div>
+
+        <div class="controls">
+            <button class="circle-btn" onclick="toggleVoice()" id="voice-btn">🔇</button>
+            <button class="circle-btn" id="ble-btn" onclick="connectBLE()">📡</button>
+        </div>
+
+        <div class="overlay nav-card">
+            <span id="meters">0</span>
+            <span style="font-size: 0.65rem; font-weight: 900; color: #888; text-transform: uppercase; letter-spacing: 1.5px;">Meters to go</span>
+            
+            <div class="floor-legend">
+                <span class="floor-dot" style="background: var(--bm-red);">Ground</span>
+                <span class="floor-dot" style="background: var(--bm-blue);">Upper</span>
+                <span class="floor-dot" style="background: var(--bm-green);">Lower</span>
+                <span class="floor-dot" style="background: var(--bm-gold); color: #000;">Lifts</span>
+            </div>
+            
+            <div style="margin-top: 10px; font-size: 0.8rem; font-weight: 800; color: var(--dark);">
+                CURRENTLY AT: <span id="current-loc" style="color: var(--bm-blue);">GREAT COURT</span>
+            </div>
+        </div>
+        <div id="label-container"></div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <script>
+        let scene, camera, renderer, userMarker, pathLine;
+        let selectedRoomId = null, voiceEnabled = false, lastInstruction = "";
+        let galleryMeshes = {};
+        const synth = window.speechSynthesis;
+
+        // Standard Floor Colors
+        const COLORS = { GF: 0xc0392b, UF: 0x2980b9, LF: 0x27ae60, LIFT: 0xd4af37 };
+
+        // Unified British Museum Gallery List
+        const rooms = {
+            "lift_north": { name: "North Lift", x: 0, z: -210, floor: 0, color: COLORS.LIFT, isLift: true },
+            "lift_west": { name: "West Lift", x: -180, z: 0, floor: 0, color: COLORS.LIFT, isLift: true },
+            
+            // Ground Floor (GF)
+            "4": { name: "Rosetta Stone", x: -150, z: -130, floor: 0, color: COLORS.GF },
+            "18": { name: "Parthenon Sculptures", x: 240, z: -110, floor: 0, color: COLORS.GF },
+            "33": { name: "Enlightenment", x: 50, z: -280, floor: 0, color: COLORS.GF },
+            "10": { name: "Assyrian Lion Hunt", x: -220, z: 50, floor: 0, color: COLORS.GF },
+            "1": { name: "Enlightenment (Library)", x: 80, z: -100, floor: 0, color: COLORS.GF },
+            "2a": { name: "Waddesdon Bequest", x: 100, z: -30, floor: 0, color: COLORS.GF },
+
+            // Upper Floor (UF)
+            "62": { name: "Egyptian Mummies", x: 180, z: 200, floor: 1, color: COLORS.UF },
+            "95": { name: "Chinese Ceramics", x: -250, z: -100, floor: 1, color: COLORS.UF },
+            "40": { name: "Medieval Europe", x: 140, z: 120, floor: 1, color: COLORS.UF },
+            "41": { name: "Sutton Hoo", x: 160, z: 250, floor: 1, color: COLORS.UF },
+            "42": { name: "Islamic World", x: -110, z: -250, floor: 1, color: COLORS.UF },
+
+            // Lower Floor (LF)
+            "25": { name: "Africa", x: 60, z: 340, floor: -1, color: COLORS.LF },
+            "27": { name: "Mexico", x: -150, z: 280, floor: -1, color: COLORS.LF }
+        };
+
+        function enterMuseum() {
+            document.getElementById('landing').style.display = 'none';
+            document.getElementById('map-ui').style.display = 'block';
+            initMap();
+            populateDropdown();
+        }
+
+        function populateDropdown() {
+            const select = document.getElementById('destination');
+            Object.keys(rooms).forEach(id => {
+                if(!rooms[id].isLift) {
+                    const opt = document.createElement('option');
+                    opt.value = id; 
+                    const f = rooms[id].floor === 0 ? "GF" : rooms[id].floor > 0 ? "UF" : "LF";
+                    opt.text = `${f}: ${rooms[id].name}`;
+                    select.add(opt);
+                }
+            });
+        }
+
+        function initMap() {
+            scene = new THREE.Scene(); scene.background = new THREE.Color(0xfcfcfc);
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 4000);
+            camera.position.set(550, 850, 550); camera.lookAt(0,0,0);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 1.3));
+            scene.add(new THREE.GridHelper(2000, 50, 0xeeeeee, 0xf9f9f9));
+
+            Object.keys(rooms).forEach(id => {
+                const r = rooms[id];
+                const mesh = new THREE.Mesh(new THREE.BoxGeometry(65, 20, 65), new THREE.MeshStandardMaterial({ color: r.color, transparent: true, opacity: 0.9 }));
+                mesh.position.set(r.x, 10, r.z);
+                scene.add(mesh);
+                galleryMeshes[id] = mesh;
+
+                const lbl = document.createElement('div');
+                lbl.className = 'world-label'; lbl.innerText = r.name;
+                lbl.style.color = (r.color === COLORS.LIFT) ? '#c0392b' : '#333';
+                document.getElementById('label-container').appendChild(lbl);
+                r.domElement = lbl;
+            });
+
+            userMarker = new THREE.Group();
+            userMarker.add(new THREE.Mesh(new THREE.SphereGeometry(16), new THREE.MeshBasicMaterial({ color: 0x007bff })));
+            userMarker.position.set(0, 16, 0); 
+            scene.add(userMarker);
+            
+            pathLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xc0392b, linewidth: 10 }));
+            scene.add(pathLine);
+            animate();
+        }
+
+        function handleRoomSelect(id) {
+            Object.values(galleryMeshes).forEach(m => gsap.to(m.scale, { x:1, y:1, z:1 }));
+            selectedRoomId = id;
+            if(id) gsap.to(galleryMeshes[id].scale, { x: 1.4, y: 1.8, z: 1.4, duration: 0.5, yoyo: true, repeat: -1 });
+            lastInstruction = "";
+        }
+
+        function navigationEngine() {
+            if(!selectedRoomId) return;
+            const target = rooms[selectedRoomId];
+            const userPos = userMarker.position;
+            const userFloor = 0; // Current Simulated Floor
+            const hud = document.getElementById('nav-hud');
+            hud.style.display = 'block';
+
+            let instruction = "";
+            let pts = [];
+
+            if (target.floor !== userFloor) {
+                const lift = rooms["lift_north"]; // Closest Lift logic
+                const distToLift = userPos.distanceTo(new THREE.Vector3(lift.x, 16, lift.z));
+                const metersLift = Math.round(distToLift/5);
+
+                if (metersLift > 10) {
+                    instruction = `STEP 1: Walk straight for ${metersLift} meters. Take left in 20 meters and reach the ${lift.name}.`;
+                    pts = [userPos, new THREE.Vector3(lift.x, 5, lift.z)];
+                } else {
+                    instruction = `STEP 2: Enter lift to the ${target.floor > 0 ? 'UPPER' : 'LOWER'} floor. Walk straight for 30 meters to reach ${target.name}.`;
+                    pts = [userPos, new THREE.Vector3(target.x, 5, target.z)];
+                }
+            } else {
+                const dist = userPos.distanceTo(new THREE.Vector3(target.x, 16, target.z));
+                const meters = Math.round(dist/5);
+                instruction = (meters < 5) ? `ARRIVED AT ${target.name}` : `Walk towards straight for ${meters} meters. Take right in 20 meters to reach destination.`;
+                pts = [userPos, new THREE.Vector3(target.x, 5, target.z)];
+            }
+
+            hud.innerText = instruction.toUpperCase();
+            pathLine.geometry.setFromPoints(pts);
+            document.getElementById('meters').innerText = Math.round(userPos.distanceTo(new THREE.Vector3(target.x, 16, target.z))/5);
+
+            if(voiceEnabled && instruction !== lastInstruction) {
+                synth.cancel();
+                synth.speak(new SpeechSynthesisUtterance(instruction));
+                lastInstruction = instruction;
+            }
+        }
+
+        function filterRooms(v) {
+            const sel = document.getElementById('destination');
+            Array.from(sel.options).forEach(opt => {
+                if(opt.value) opt.style.display = opt.text.toLowerCase().includes(v.toLowerCase()) ? "block" : "none";
+            });
+        }
+
+        function toggleVoice() {
+            voiceEnabled = !voiceEnabled;
+            document.getElementById('voice-btn').classList.toggle('active', voiceEnabled);
+            document.getElementById('voice-btn').innerText = voiceEnabled ? "🔊" : "🔇";
+        }
+
+        async function connectBLE() {
+            try {
+                const device = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'BM' }], optionalServices: ['battery_service'] });
+                document.getElementById('ble-btn').classList.add('active');
+            } catch(e) { alert("BLE Beacon not found. Running Simulation mode."); }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            navigationEngine();
+            
+            let closest = "GREAT COURT";
+            Object.keys(rooms).forEach(id => {
+                if (userMarker.position.distanceTo(new THREE.Vector3(rooms[id].x, 0, rooms[id].z)) < 85) closest = rooms[id].name;
+            });
+            document.getElementById('current-loc').innerText = closest;
+
+            Object.keys(rooms).forEach(id => {
+                const r = rooms[id];
+                const vector = new THREE.Vector3(r.x, 40, r.z).project(camera);
+                r.domElement.style.left = `${(vector.x * .5 + .5) * window.innerWidth}px`;
+                r.domElement.style.top = `${(-(vector.y * .5) + .5) * window.innerHeight}px`;
+                r.domElement.style.display = (vector.z < 1) ? "block" : "none";
+            });
+
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
