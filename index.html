@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>BM Wayfinder | Motion HD</title>
+    <title>BM Wayfinder | Color-Coded HD</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
     <style>
         :root { 
-            --bm-red: #c0392b; --bm-blue: #2980b9; --bm-green: #27ae60; --bm-gold: #d4af37;
+            --bm-red: #c0392b; --bm-blue: #2980b9; --bm-green: #27ae60; --bm-gold: #333333;
             --glass: rgba(255, 255, 255, 0.98); --dark: #1a1a1a; 
         }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -22,22 +22,27 @@
         .overlay { pointer-events: auto; background: var(--glass); border-radius: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: absolute; }
         
         .search-panel { top: 15px; left: 10px; right: 10px; padding: 12px; border-top: 5px solid var(--dark); }
-        #search-input, #destination { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 5px; font-size: 15px; font-weight: 600; }
+        #search-input, #destination { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 5px; font-size: 15px; font-weight: 700; }
 
+        /* Dynamic Floor HUD */
         #nav-hud {
             position: absolute; top: 175px; left: 50%; transform: translateX(-50%);
             background: var(--dark); color: white; padding: 12px 20px; border-radius: 12px;
             font-weight: 800; text-align: center; width: 90%; display: none; z-index: 1001;
+            border-bottom: 4px solid var(--bm-red);
         }
 
         .controls { position: absolute; right: 15px; top: 175px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
         .circle-btn { width: 50px; height: 50px; border-radius: 50%; background: white; border: none; box-shadow: 0 4px 10px rgba(0,0,0,0.15); font-size: 1.2rem; display: flex; align-items: center; justify-content: center; }
         .circle-btn.active { background: #2ecc71; color: white; }
 
+        /* Floor Legend UI */
         .nav-card { bottom: 20px; left: 50%; transform: translateX(-50%); width: 92%; padding: 15px; text-align: center; }
         #meters { font-size: 2.8rem; font-weight: 900; color: var(--bm-red); display: block; line-height: 1; }
         
-        /* High-Visibility Gallery Labels */
+        .floor-legend { display: flex; justify-content: center; gap: 8px; margin-top: 12px; }
+        .legend-item { font-size: 0.65rem; font-weight: 900; color: white; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
+
         .world-label { 
             position: absolute; font-size: 11px; font-weight: 900; color: #ffffff;
             background: rgba(0, 0, 0, 0.7); padding: 4px 8px; border-radius: 5px;
@@ -52,7 +57,7 @@
 
     <div id="landing">
         <h1 style="letter-spacing: 5px;">BRITISH MUSEUM</h1>
-        <p style="color: var(--bm-red); font-weight: 800;">MOTION & SENSOR HD</p>
+        <p style="font-weight: 800; opacity: 0.7;">3D COLOR-CODED NAVIGATION</p>
         <button class="btn-start" onclick="initSensors()">ENABLE SENSORS & START</button>
     </div>
 
@@ -60,9 +65,9 @@
         <div id="nav-hud">PLEASE SELECT A GALLERY</div>
 
         <div class="overlay search-panel">
-            <input type="text" id="search-input" placeholder="🔍 Find Gallery..." oninput="filterRooms(this.value)">
+            <input type="text" id="search-input" placeholder="🔍 Search Exhibit..." oninput="filterRooms(this.value)">
             <select id="destination" onchange="handleRoomSelect(this.value)">
-                <option value="">-- Choose Destination --</option>
+                <option value="">-- Select Destination --</option>
             </select>
         </div>
 
@@ -73,9 +78,17 @@
 
         <div class="overlay nav-card">
             <span id="meters">0</span>
-            <span style="font-size: 0.7rem; font-weight: 800; color: #999;">METERS TO GO</span>
-            <div style="margin-top: 8px; font-size: 0.8rem; font-weight: 800;">
-                CURRENT: <span id="current-loc" style="color: var(--bm-blue);">GREAT COURT</span>
+            <span style="font-size: 0.7rem; font-weight: 800; color: #999;">METERS REMAINING</span>
+            
+            <div class="floor-legend">
+                <span class="legend-item" style="background: var(--bm-red);">Ground</span>
+                <span class="legend-item" style="background: var(--bm-blue);">Upper</span>
+                <span class="legend-item" style="background: var(--bm-green);">Lower</span>
+                <span class="legend-item" style="background: var(--bm-gold);">Lifts</span>
+            </div>
+
+            <div style="margin-top: 10px; font-size: 0.8rem; font-weight: 800;">
+                AT: <span id="current-loc" style="color: var(--bm-blue);">GREAT COURT</span>
             </div>
         </div>
         <div id="label-container"></div>
@@ -89,38 +102,38 @@
         let galleryMeshes = {};
         const synth = window.speechSynthesis;
 
-        const COLORS = { GF: 0xc0392b, UF: 0x2980b9, LF: 0x27ae60, LIFT: 0x333333 };
-
-        const rooms = {
-            "4": { name: "Rosetta Stone", x: -250, z: -180, floor: 0, color: COLORS.GF },
-            "18": { name: "Parthenon Sculptures", x: 350, z: -100, floor: 0, color: COLORS.GF },
-            "33": { name: "Enlightenment", x: 100, z: -350, floor: 0, color: COLORS.GF },
-            "62": { name: "Egyptian Mummies", x: 250, z: 250, floor: 1, color: COLORS.UF },
-            "95": { name: "Chinese Ceramics", x: -350, z: -50, floor: 1, color: COLORS.UF },
-            "25": { name: "Africa", x: 100, z: 400, floor: -1, color: COLORS.LF },
-            "lift_north": { name: "North Lift", x: 0, z: -250, floor: 0, color: COLORS.LIFT, isLift: true }
+        // --- DYNAMIC FLOOR SCHEMA ---
+        const COLORS = { 
+            GF: 0xc0392b, // Crimson
+            UF: 0x2980b9, // Royal Blue
+            LF: 0x27ae60, // Emerald
+            LIFT: 0x333333 // Onyx
         };
 
-        // --- NEW: SENSOR INITIALIZATION ---
+        const rooms = {
+            "4": { name: "Rosetta Stone", x: -280, z: -200, floor: "GF", color: COLORS.GF },
+            "18": { name: "Parthenon Sculptures", x: 380, z: -120, floor: "GF", color: COLORS.GF },
+            "33": { name: "Enlightenment", x: 120, z: -380, floor: "GF", color: COLORS.GF },
+            "62": { name: "Egyptian Mummies", x: 280, z: 280, floor: "UF", color: COLORS.UF },
+            "95": { name: "Chinese Ceramics", x: -380, z: -80, floor: "UF", color: COLORS.UF },
+            "25": { name: "Africa", x: 150, z: 450, floor: "LF", color: COLORS.LF },
+            "27": { name: "Mexico", x: -200, z: 400, floor: "LF", color: COLORS.LF },
+            "lift_north": { name: "North Lift", x: 0, z: -280, floor: "LIFT", color: COLORS.LIFT, isLift: true }
+        };
+
         async function initSensors() {
             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
                 try {
                     const permission = await DeviceOrientationEvent.requestPermission();
-                    if (permission === 'granted') {
-                        window.addEventListener('deviceorientation', handleOrientation);
-                    }
-                } catch (e) { console.error("Orientation permission denied"); }
-            } else {
-                window.addEventListener('deviceorientation', handleOrientation);
-            }
+                    if (permission === 'granted') window.addEventListener('deviceorientation', handleOrientation);
+                } catch (e) { console.error(e); }
+            } else { window.addEventListener('deviceorientation', handleOrientation); }
             enterMuseum();
         }
 
         function handleOrientation(event) {
-            // Adjust user marker rotation based on phone compass (alpha)
             if (userMarker && event.alpha !== null) {
-                const compassReading = event.alpha; 
-                gsap.to(userMarker.rotation, { y: THREE.MathUtils.degToRad(compassReading), duration: 0.1 });
+                gsap.to(userMarker.rotation, { y: THREE.MathUtils.degToRad(event.alpha), duration: 0.1 });
             }
         }
 
@@ -136,7 +149,8 @@
             Object.keys(rooms).sort().forEach(id => {
                 if(!rooms[id].isLift) {
                     const opt = document.createElement('option');
-                    opt.value = id; opt.text = rooms[id].name;
+                    opt.value = id; 
+                    opt.text = `[${rooms[id].floor}] ${rooms[id].name}`;
                     select.add(opt);
                 }
             });
@@ -147,7 +161,7 @@
             scene.background = new THREE.Color(0xffffff);
 
             camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 5000);
-            camera.position.set(700, 900, 700); 
+            camera.position.set(800, 1000, 800); 
             camera.lookAt(0,0,0);
             
             renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -166,8 +180,12 @@
 
             Object.keys(rooms).forEach(id => {
                 const r = rooms[id];
-                const mesh = new THREE.Mesh(new THREE.BoxGeometry(80, 20, 80), new THREE.MeshStandardMaterial({ color: r.color }));
-                mesh.position.set(r.x, 10, r.z);
+                const mesh = new THREE.Mesh(new THREE.BoxGeometry(90, 25, 90), new THREE.MeshStandardMaterial({ 
+                    color: r.color,
+                    emissive: r.color,
+                    emissiveIntensity: 0.1
+                }));
+                mesh.position.set(r.x, 12.5, r.z);
                 scene.add(mesh);
                 galleryMeshes[id] = mesh;
 
@@ -177,16 +195,13 @@
                 r.domElement = lbl;
             });
 
-            // Enhanced User Marker with Directional Nose
             userMarker = new THREE.Group();
-            const body = new THREE.Mesh(new THREE.SphereGeometry(22), new THREE.MeshBasicMaterial({ color: 0x007bff }));
+            userMarker.add(new THREE.Mesh(new THREE.SphereGeometry(22), new THREE.MeshBasicMaterial({ color: 0x007bff })));
             const nose = new THREE.Mesh(new THREE.ConeGeometry(10, 30, 4), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
-            nose.rotation.x = Math.PI / 2;
-            nose.position.z = -25;
-            userMarker.add(body);
+            nose.rotation.x = Math.PI/2; nose.position.z = -25;
             userMarker.add(nose);
             
-            const ring = new THREE.Mesh(new THREE.RingGeometry(30, 40, 32), new THREE.MeshBasicMaterial({ color: 0x007bff, transparent: true, opacity: 0.4, side: THREE.DoubleSide }));
+            const ring = new THREE.Mesh(new THREE.RingGeometry(30, 45, 32), new THREE.MeshBasicMaterial({ color: 0x007bff, transparent: true, opacity: 0.4, side: THREE.DoubleSide }));
             ring.rotation.x = Math.PI/2;
             pulseRing = ring;
             userMarker.add(ring);
@@ -197,6 +212,23 @@
             pathLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xc0392b, linewidth: 5 }));
             scene.add(pathLine);
             animate();
+        }
+
+        function handleRoomSelect(id) {
+            selectedRoomId = id;
+            const hud = document.getElementById('nav-hud');
+            
+            // Reset all galleries to normal scale
+            Object.values(galleryMeshes).forEach(m => m.scale.set(1,1,1));
+            
+            if(id) {
+                const target = rooms[id];
+                gsap.to(galleryMeshes[id].scale, { y: 3, duration: 0.4, ease: "bounce.out" });
+                
+                // Update HUD color based on Floor Schema
+                const colorHex = target.floor === "GF" ? "#c0392b" : target.floor === "UF" ? "#2980b9" : "#27ae60";
+                hud.style.borderBottomColor = colorHex;
+            }
         }
 
         async function connectBLE() {
@@ -218,20 +250,14 @@
                     const [x, z] = val.split(',').map(parseFloat);
                     if(!isNaN(x)) gsap.to(userMarker.position, { x, z, duration: 0.4 });
                 });
-            } catch(e) { alert("BLE Error: Ensure Bluetooth & Location are ON."); }
-        }
-
-        function handleRoomSelect(id) {
-            selectedRoomId = id;
-            Object.values(galleryMeshes).forEach(m => m.scale.set(1,1,1));
-            if(id) gsap.to(galleryMeshes[id].scale, { y: 2.5, duration: 0.3 });
+            } catch(e) { alert("BLE Connection Error."); }
         }
 
         function animate() {
             requestAnimationFrame(animate);
             if(pulseRing) {
-                pulseRing.scale.addScalar(0.01);
-                pulseRing.material.opacity -= 0.008;
+                pulseRing.scale.addScalar(0.012);
+                pulseRing.material.opacity -= 0.01;
                 if(pulseRing.scale.x > 2.5) { pulseRing.scale.set(1,1,1); pulseRing.material.opacity = 0.4; }
             }
             if(selectedRoomId) {
@@ -239,12 +265,12 @@
                 const d = Math.round(userMarker.position.distanceTo(new THREE.Vector3(target.x, 0, target.z)) / 5);
                 document.getElementById('meters').innerText = d;
                 document.getElementById('nav-hud').style.display = 'block';
-                document.getElementById('nav-hud').innerText = `WALK TO ${target.name.toUpperCase()} (${d}m)`;
+                document.getElementById('nav-hud').innerText = `${target.floor} FLOOR: WALK TO ${target.name.toUpperCase()} (${d}m)`;
                 pathLine.geometry.setFromPoints([userMarker.position, new THREE.Vector3(target.x, 5, target.z)]);
             }
             Object.keys(rooms).forEach(id => {
                 const r = rooms[id];
-                const vector = new THREE.Vector3(r.x, 40, r.z).project(camera);
+                const vector = new THREE.Vector3(r.x, 50, r.z).project(camera);
                 r.domElement.style.left = `${(vector.x * .5 + .5) * window.innerWidth}px`;
                 r.domElement.style.top = `${(-(vector.y * .5) + .5) * window.innerHeight}px`;
                 r.domElement.style.display = (vector.z < 1) ? "block" : "none";
