@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>BM Wayfinder | Live GPS & BLE Sync</title>
+    <title>BM Wayfinder | Live GPS Distance Sync</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
     <style>
@@ -57,8 +57,8 @@
 
     <div id="landing">
         <h1 style="letter-spacing: 5px;">BRITISH MUSEUM</h1>
-        <p style="font-weight: 800; opacity: 0.7;">3D GPS & BEACON NAVIGATION</p>
-        <button class="btn-start" onclick="initSensors()">ENABLE SENSORS & START</button>
+        <p style="font-weight: 800; opacity: 0.7;">3D GPS DISTANCE TRACKER</p>
+        <button class="btn-start" onclick="initSensors()">ENABLE GPS & START</button>
     </div>
 
     <div id="map-ui">
@@ -102,6 +102,7 @@
         let galleryMeshes = {};
         
         let initialLat = null, initialLong = null;
+        let liveUserPos = new THREE.Vector3(0, 15, 0); // Keep track of position for math, not visuals
         const GPS_SENSITIVITY = 100000; 
 
         const COLORS = { GF: 0xc0392b, UF: 0x2980b9, LF: 0x27ae60, LIFT: 0x333333 };
@@ -145,14 +146,15 @@
             const lat = position.coords.latitude;
             const lng = position.coords.longitude;
             if (initialLat === null) { initialLat = lat; initialLong = lng; }
-            const newX = (lng - initialLong) * GPS_SENSITIVITY;
-            const newZ = (lat - initialLat) * GPS_SENSITIVITY;
-            if (userMarker) {
-                const display = document.getElementById('current-loc-display');
-                display.classList.add('highlight-move');
-                setTimeout(() => display.classList.remove('highlight-move'), 500);
-                gsap.to(userMarker.position, { x: newX, z: newZ, duration: 1.5 });
-            }
+            
+            // Calculate coordinates for distance math
+            liveUserPos.x = (lng - initialLong) * GPS_SENSITIVITY;
+            liveUserPos.z = (lat - initialLat) * GPS_SENSITIVITY;
+
+            // Flash the UI to show movement is being tracked
+            const display = document.getElementById('current-loc-display');
+            display.classList.add('highlight-move');
+            setTimeout(() => display.classList.remove('highlight-move'), 500);
         }
 
         function enterMuseum() {
@@ -193,6 +195,7 @@
                 r.domElement = lbl;
             });
 
+            // FIXED USER ELEMENT (Does not move physically, just rotates)
             userMarker = new THREE.Group();
             userMarker.add(new THREE.Mesh(new THREE.SphereGeometry(22), new THREE.MeshPhongMaterial({ color: 0x007bff })));
             const nose = new THREE.Mesh(new THREE.ConeGeometry(10, 30, 4), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
@@ -205,6 +208,7 @@
 
             userMarker.position.set(0, 15, 0); 
             scene.add(userMarker);
+            
             pathLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xc0392b, linewidth: 5 }));
             scene.add(pathLine);
             animate();
@@ -212,22 +216,13 @@
 
         async function connectBLE() {
             const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"; 
-            const CHARACTERISTIC_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
             try {
                 const device = await navigator.bluetooth.requestDevice({
                     filters: [{ namePrefix: 'BM-' }], 
                     optionalServices: [SERVICE_UUID]
                 });
-                const server = await device.gatt.connect();
-                const service = await server.getPrimaryService(SERVICE_UUID);
-                const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
-                await characteristic.startNotifications();
+                alert("Connected to Beacon: " + device.name);
                 document.getElementById('ble-btn').classList.add('active-ble');
-                characteristic.addEventListener('characteristicvaluechanged', (e) => {
-                    const val = new TextDecoder().decode(e.target.value);
-                    const [x, z] = val.split(',').map(parseFloat);
-                    if(!isNaN(x)) gsap.to(userMarker.position, { x, z, duration: 0.8 });
-                });
             } catch(e) { alert("BLE Error: " + e.message); }
         }
 
@@ -240,12 +235,16 @@
             }
             if(selectedRoomId) {
                 const target = rooms[selectedRoomId];
-                const dist = userMarker.position.distanceTo(new THREE.Vector3(target.x, 0, target.z));
+                // Distance is calculated between live GPS position and the room
+                const dist = liveUserPos.distanceTo(new THREE.Vector3(target.x, 0, target.z));
                 const d = Math.round(dist / 5);
+                
                 document.getElementById('meters').innerText = d;
                 document.getElementById('nav-hud').style.display = 'block';
                 document.getElementById('nav-hud').innerText = `${target.floor} FLOOR: WALK TO ${target.name.toUpperCase()} (${d}m)`;
-                pathLine.geometry.setFromPoints([userMarker.position, new THREE.Vector3(target.x, 5, target.z)]);
+                
+                // The path line connects the fixed sphere (0,0) to the destination
+                pathLine.geometry.setFromPoints([new THREE.Vector3(0, 5, 0), new THREE.Vector3(target.x, 5, target.z)]);
             }
             Object.keys(rooms).forEach(id => {
                 const r = rooms[id];
