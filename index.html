@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>BM Wayfinder | Live GPS Sync</title>
+    <title>BM Wayfinder | Live GPS & BLE Sync</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
     <style>
         :root { 
-            --bm-red: #c0392b; --bm-blue: #2980b9; --bm-green: #27ae60; --bm-gold: #333333;
+            --bm-red: #c0392b; --bm-blue: #2980b9; --bm-green: #27ae60; --bm-gold: #f1c40f;
             --glass: rgba(255, 255, 255, 0.98); --dark: #1a1a1a; 
         }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -31,7 +31,8 @@
         }
 
         .controls { position: absolute; right: 15px; top: 175px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
-        .circle-btn { width: 50px; height: 50px; border-radius: 50%; background: white; border: none; box-shadow: 0 4px 10px rgba(0,0,0,0.15); font-size: 1.2rem; display: flex; align-items: center; justify-content: center; }
+        .circle-btn { width: 50px; height: 50px; border-radius: 50%; background: white; border: none; box-shadow: 0 4px 10px rgba(0,0,0,0.15); font-size: 1.2rem; display: flex; align-items: center; justify-content: center; transition: all 0.3s; }
+        .active-ble { background: #2ecc71 !important; color: white !important; }
 
         .nav-card { bottom: 20px; left: 50%; transform: translateX(-50%); width: 92%; padding: 15px; text-align: center; }
         #meters { font-size: 2.8rem; font-weight: 900; color: var(--bm-red); display: block; line-height: 1; }
@@ -47,14 +48,18 @@
             z-index: 500;
         }
         #canvas-container { position: absolute; inset: 0; background: #ffffff; }
+
+        /* User Movement Highlight */
+        #current-loc-display { margin-top: 10px; font-size: 0.8rem; font-weight: 800; transition: all 0.3s; padding: 4px; border-radius: 4px; }
+        .highlight-move { background: var(--bm-gold); color: black !important; }
     </style>
 </head>
 <body>
 
     <div id="landing">
         <h1 style="letter-spacing: 5px;">BRITISH MUSEUM</h1>
-        <p style="font-weight: 800; opacity: 0.7;">3D GPS NAVIGATION</p>
-        <button class="btn-start" onclick="initSensors()">ENABLE GPS & START</button>
+        <p style="font-weight: 800; opacity: 0.7;">3D GPS & BEACON NAVIGATION</p>
+        <button class="btn-start" onclick="initSensors()">ENABLE SENSORS & START</button>
     </div>
 
     <div id="map-ui">
@@ -83,7 +88,7 @@
                 <span class="legend-item" style="background: var(--bm-gold);">Lifts</span>
             </div>
 
-            <div style="margin-top: 10px; font-size: 0.8rem; font-weight: 800;">
+            <div id="current-loc-display">
                 AT: <span id="current-loc" style="color: var(--bm-blue);">GREAT COURT</span>
             </div>
         </div>
@@ -97,10 +102,8 @@
         let selectedRoomId = null, voiceEnabled = false;
         let galleryMeshes = {};
         
-        // --- GPS CONSTANTS ---
-        let initialLat = null;
-        let initialLong = null;
-        const GPS_SENSITIVITY = 100000; // Multiplier to turn Lat/Long decimals into 3D units
+        let initialLat = null, initialLong = null;
+        const GPS_SENSITIVITY = 100000; 
 
         const COLORS = { GF: 0xc0392b, UF: 0x2980b9, LF: 0x27ae60, LIFT: 0x333333 };
 
@@ -116,30 +119,27 @@
         };
 
         async function initSensors() {
-            // 1. Request Orientation (Compass)
+            // Request Permission for Orientation (Compass)
             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
                 try {
                     const permission = await DeviceOrientationEvent.requestPermission();
                     if (permission === 'granted') window.addEventListener('deviceorientation', handleOrientation);
-                } catch (e) { console.error(e); }
+                } catch (e) { alert("Orientation sensor denied."); }
             } else { window.addEventListener('deviceorientation', handleOrientation); }
 
-            // 2. Start GPS Tracking
+            // Request GPS Location
             if (navigator.geolocation) {
                 navigator.geolocation.watchPosition(updateUserPosition, 
-                    (err) => console.warn(`GPS Error: ${err.message}`), 
-                    { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+                    (err) => console.warn(err), 
+                    { enableHighAccuracy: true, maximumAge: 0 }
                 );
-            } else {
-                alert("Geolocation is not supported by this browser.");
             }
 
             enterMuseum();
         }
 
         function handleOrientation(event) {
-            // Use alpha for rotation (0-360 degrees)
-            if (userMarker && event.alpha !== null) {
+            if (userMarker) {
                 const heading = event.webkitCompassHeading || (360 - event.alpha);
                 gsap.to(userMarker.rotation, { y: THREE.MathUtils.degToRad(-heading), duration: 0.1 });
             }
@@ -149,17 +149,17 @@
             const lat = position.coords.latitude;
             const lng = position.coords.longitude;
 
-            // Set the first coordinate received as the center (0,0) of the map
-            if (initialLat === null) {
-                initialLat = lat;
-                initialLong = lng;
-            }
+            if (initialLat === null) { initialLat = lat; initialLong = lng; }
 
-            // Calculate movement relative to the start position
             const newX = (lng - initialLong) * GPS_SENSITIVITY;
             const newZ = (lat - initialLat) * GPS_SENSITIVITY;
 
             if (userMarker) {
+                // Highlight Location Text on change
+                const display = document.getElementById('current-loc-display');
+                display.classList.add('highlight-move');
+                setTimeout(() => display.classList.remove('highlight-move'), 500);
+
                 gsap.to(userMarker.position, { x: newX, z: newZ, duration: 1.5 });
             }
         }
@@ -174,7 +174,6 @@
         function initMap() {
             scene = new THREE.Scene(); 
             scene.background = new THREE.Color(0xffffff);
-
             camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 5000);
             camera.position.set(800, 1000, 800); 
             camera.lookAt(0,0,0);
@@ -203,8 +202,9 @@
                 r.domElement = lbl;
             });
 
+            // USER ELEMENT
             userMarker = new THREE.Group();
-            userMarker.add(new THREE.Mesh(new THREE.SphereGeometry(22), new THREE.MeshBasicMaterial({ color: 0x007bff })));
+            userMarker.add(new THREE.Mesh(new THREE.SphereGeometry(22), new THREE.MeshPhongMaterial({ color: 0x007bff })));
             const nose = new THREE.Mesh(new THREE.ConeGeometry(10, 30, 4), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
             nose.rotation.x = Math.PI/2; nose.position.z = -25;
             userMarker.add(nose);
@@ -222,6 +222,35 @@
             animate();
         }
 
+        async function connectBLE() {
+            // Actual Web Bluetooth Implementation
+            const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"; 
+            const CHARACTERISTIC_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+            try {
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ namePrefix: 'BM-' }], // Device name must start with BM-
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+                await characteristic.startNotifications();
+                document.getElementById('ble-btn').classList.add('active-ble');
+                
+                characteristic.addEventListener('characteristicvaluechanged', (e) => {
+                    const val = new TextDecoder().decode(e.target.value);
+                    const [x, z] = val.split(',').map(parseFloat);
+                    if(!isNaN(x)) gsap.to(userMarker.position, { x, z, duration: 0.8 });
+                });
+                alert("Connected to Beacon: " + device.name);
+            } catch(e) {
+                alert("BLE Error: Ensure Bluetooth is ON and your device name starts with 'BM-'. " + e.message);
+            }
+        }
+
         function animate() {
             requestAnimationFrame(animate);
             if(pulseRing) {
@@ -231,11 +260,15 @@
             }
             if(selectedRoomId) {
                 const target = rooms[selectedRoomId];
-                // Distance calculation updated to reflect current userMarker position
                 const dist = userMarker.position.distanceTo(new THREE.Vector3(target.x, 0, target.z));
-                const d = Math.round(dist / 5); // Scale units to meters
+                const d = Math.round(dist / 5);
                 
-                document.getElementById('meters').innerText = d;
+                const mDisplay = document.getElementById('meters');
+                if(mDisplay.innerText != d) {
+                    mDisplay.innerText = d;
+                    gsap.fromTo(mDisplay, {scale: 1.2}, {scale: 1, duration: 0.2});
+                }
+                
                 document.getElementById('nav-hud').style.display = 'block';
                 document.getElementById('nav-hud').innerText = `${target.floor} FLOOR: WALK TO ${target.name.toUpperCase()} (${d}m)`;
                 pathLine.geometry.setFromPoints([userMarker.position, new THREE.Vector3(target.x, 5, target.z)]);
@@ -252,13 +285,12 @@
 
         function handleRoomSelect(id) {
             selectedRoomId = id;
-            const hud = document.getElementById('nav-hud');
             Object.values(galleryMeshes).forEach(m => m.scale.set(1,1,1));
             if(id) {
                 const target = rooms[id];
                 gsap.to(galleryMeshes[id].scale, { y: 3, duration: 0.4, ease: "bounce.out" });
                 const colorHex = target.floor === "GF" ? "#c0392b" : target.floor === "UF" ? "#2980b9" : "#27ae60";
-                hud.style.borderBottomColor = colorHex;
+                document.getElementById('nav-hud').style.borderBottomColor = colorHex;
             }
         }
 
@@ -267,8 +299,7 @@
             Object.keys(rooms).sort().forEach(id => {
                 if(!rooms[id].isLift) {
                     const opt = document.createElement('option');
-                    opt.value = id; 
-                    opt.text = `[${rooms[id].floor}] ${rooms[id].name}`;
+                    opt.value = id; opt.text = `[${rooms[id].floor}] ${rooms[id].name}`;
                     select.add(opt);
                 }
             });
@@ -284,10 +315,6 @@
         function toggleVoice() {
             voiceEnabled = !voiceEnabled;
             document.getElementById('voice-btn').innerText = voiceEnabled ? "🔊" : "🔇";
-        }
-        
-        async function connectBLE() {
-            alert("Bluetooth searching for BM-Wayfinder-Beacon...");
         }
     </script>
 </body>
