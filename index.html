@@ -3,19 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>BM Wayfinder | Final GPS HD</title>
+    <title>BM Wayfinder | Live GPS Sync</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
     <style>
         :root { 
-            --bm-red: #c0392b; --bm-blue: #2980b9; --bm-green: #27ae60; --bm-gold: #f1c40f;
+            --bm-red: #c0392b; --bm-blue: #2980b9; --bm-green: #27ae60; --bm-gold: #333333;
             --glass: rgba(255, 255, 255, 0.98); --dark: #1a1a1a; 
         }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: 'Segoe UI', sans-serif; background: #ffffff; }
 
         #landing { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 2000; background: #000; color: white; text-align: center; }
-        .btn-start { background: var(--bm-red); color: white; border: none; padding: 18px 50px; border-radius: 50px; font-weight: 900; font-size: 1.1rem; cursor: pointer; margin-top: 20px; box-shadow: 0 4px 15px rgba(192,57,43,0.4); }
+        .btn-start { background: var(--bm-red); color: white; border: none; padding: 18px 50px; border-radius: 50px; font-weight: 900; font-size: 1.1rem; cursor: pointer; margin-top: 20px; }
 
         #map-ui { display: none; position: fixed; inset: 0; z-index: 1000; pointer-events: none; }
         .overlay { pointer-events: auto; background: var(--glass); border-radius: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: absolute; }
@@ -39,13 +39,12 @@
         .floor-legend { display: flex; justify-content: center; gap: 8px; margin-top: 12px; }
         .legend-item { font-size: 0.65rem; font-weight: 900; color: white; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
 
-        #current-loc-box { margin-top: 10px; font-size: 0.8rem; font-weight: 800; padding: 8px; border-radius: 8px; transition: all 0.3s ease; border: 1px solid #eee; }
-        .moving-highlight { background: var(--bm-gold); color: black !important; }
-
         .world-label { 
             position: absolute; font-size: 11px; font-weight: 900; color: #ffffff;
             background: rgba(0, 0, 0, 0.7); padding: 4px 8px; border-radius: 5px;
-            pointer-events: none; transform: translate(-50%, -120%); white-space: nowrap;
+            pointer-events: none; transform: translate(-50%, -120%); 
+            white-space: nowrap; border: 1px solid rgba(255,255,255,0.2);
+            z-index: 500;
         }
         #canvas-container { position: absolute; inset: 0; background: #ffffff; }
     </style>
@@ -54,32 +53,38 @@
 
     <div id="landing">
         <h1 style="letter-spacing: 5px;">BRITISH MUSEUM</h1>
-        <p style="font-weight: 800; opacity: 0.7;">3D GPS MOTION SYNC</p>
-        <button class="btn-start" onclick="initExperience()">ENABLE GPS & ENTER</button>
+        <p style="font-weight: 800; opacity: 0.7;">3D GPS NAVIGATION</p>
+        <button class="btn-start" onclick="initSensors()">ENABLE GPS & START</button>
     </div>
 
     <div id="map-ui">
         <div id="nav-hud">PLEASE SELECT A GALLERY</div>
+
         <div class="overlay search-panel">
             <input type="text" id="search-input" placeholder="🔍 Search Exhibit..." oninput="filterRooms(this.value)">
             <select id="destination" onchange="handleRoomSelect(this.value)">
                 <option value="">-- Select Destination --</option>
             </select>
         </div>
+
         <div class="controls">
             <button class="circle-btn" onclick="toggleVoice()" id="voice-btn">🔇</button>
             <button class="circle-btn" id="ble-btn" onclick="connectBLE()">📡</button>
         </div>
+
         <div class="overlay nav-card">
             <span id="meters">0</span>
             <span style="font-size: 0.7rem; font-weight: 800; color: #999;">METERS REMAINING</span>
+            
             <div class="floor-legend">
                 <span class="legend-item" style="background: var(--bm-red);">Ground</span>
                 <span class="legend-item" style="background: var(--bm-blue);">Upper</span>
                 <span class="legend-item" style="background: var(--bm-green);">Lower</span>
+                <span class="legend-item" style="background: var(--bm-gold);">Lifts</span>
             </div>
-            <div id="current-loc-box">
-                STATUS: <span id="current-loc-text" style="color: var(--bm-blue);">CALIBRATING GPS...</span>
+
+            <div style="margin-top: 10px; font-size: 0.8rem; font-weight: 800;">
+                AT: <span id="current-loc" style="color: var(--bm-blue);">GREAT COURT</span>
             </div>
         </div>
         <div id="label-container"></div>
@@ -88,83 +93,102 @@
     <div id="canvas-container"></div>
 
     <script>
-        let scene, camera, renderer, userMarker, pathLine, pulseRing, moveHalo;
+        let scene, camera, renderer, userMarker, pathLine, pulseRing;
         let selectedRoomId = null, voiceEnabled = false;
         let galleryMeshes = {};
-        let initialLat = null, initialLong = null;
-        const GPS_SCALE = 100000; 
+        
+        // --- GPS CONSTANTS ---
+        let initialLat = null;
+        let initialLong = null;
+        const GPS_SENSITIVITY = 100000; // Multiplier to turn Lat/Long decimals into 3D units
 
         const COLORS = { GF: 0xc0392b, UF: 0x2980b9, LF: 0x27ae60, LIFT: 0x333333 };
+
         const rooms = {
             "4": { name: "Rosetta Stone", x: -280, z: -200, floor: "GF", color: COLORS.GF },
             "18": { name: "Parthenon Sculptures", x: 380, z: -120, floor: "GF", color: COLORS.GF },
+            "33": { name: "Enlightenment", x: 120, z: -380, floor: "GF", color: COLORS.GF },
             "62": { name: "Egyptian Mummies", x: 280, z: 280, floor: "UF", color: COLORS.UF },
-            "25": { name: "Africa", x: 150, z: 450, floor: "LF", color: COLORS.LF }
+            "95": { name: "Chinese Ceramics", x: -380, z: -80, floor: "UF", color: COLORS.UF },
+            "25": { name: "Africa", x: 150, z: 450, floor: "LF", color: COLORS.LF },
+            "27": { name: "Mexico", x: -200, z: 400, floor: "LF", color: COLORS.LF },
+            "lift_north": { name: "North Lift", x: 0, z: -280, floor: "LIFT", color: COLORS.LIFT, isLift: true }
         };
 
-        // --- SENSOR START (Must be triggered by button click) ---
-        async function initExperience() {
-            // 1. Compass Permission (iOS 13+)
+        async function initSensors() {
+            // 1. Request Orientation (Compass)
             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
                 try {
-                    const response = await DeviceOrientationEvent.requestPermission();
-                    if (response === 'granted') window.addEventListener('deviceorientation', handleMotion, true);
-                } catch (e) { console.error("Orientation access denied"); }
-            } else { window.addEventListener('deviceorientation', handleMotion, true); }
+                    const permission = await DeviceOrientationEvent.requestPermission();
+                    if (permission === 'granted') window.addEventListener('deviceorientation', handleOrientation);
+                } catch (e) { console.error(e); }
+            } else { window.addEventListener('deviceorientation', handleOrientation); }
 
-            // 2. GPS Permission
+            // 2. Start GPS Tracking
             if (navigator.geolocation) {
-                navigator.geolocation.watchPosition(updateGPS, (e) => {
-                    document.getElementById('current-loc-text').innerText = "GPS Error: " + e.message;
-                }, { enableHighAccuracy: true, maximumAge: 0 });
+                navigator.geolocation.watchPosition(updateUserPosition, 
+                    (err) => console.warn(`GPS Error: ${err.message}`), 
+                    { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+                );
+            } else {
+                alert("Geolocation is not supported by this browser.");
             }
 
+            enterMuseum();
+        }
+
+        function handleOrientation(event) {
+            // Use alpha for rotation (0-360 degrees)
+            if (userMarker && event.alpha !== null) {
+                const heading = event.webkitCompassHeading || (360 - event.alpha);
+                gsap.to(userMarker.rotation, { y: THREE.MathUtils.degToRad(-heading), duration: 0.1 });
+            }
+        }
+
+        function updateUserPosition(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+
+            // Set the first coordinate received as the center (0,0) of the map
+            if (initialLat === null) {
+                initialLat = lat;
+                initialLong = lng;
+            }
+
+            // Calculate movement relative to the start position
+            const newX = (lng - initialLong) * GPS_SENSITIVITY;
+            const newZ = (lat - initialLat) * GPS_SENSITIVITY;
+
+            if (userMarker) {
+                gsap.to(userMarker.position, { x: newX, z: newZ, duration: 1.5 });
+            }
+        }
+
+        function enterMuseum() {
             document.getElementById('landing').style.display = 'none';
             document.getElementById('map-ui').style.display = 'block';
             initMap();
             populateDropdown();
         }
 
-        function handleMotion(e) {
-            let heading = e.webkitCompassHeading || (360 - e.alpha);
-            if (userMarker) gsap.to(userMarker.rotation, { y: THREE.MathUtils.degToRad(-heading), duration: 0.2 });
-        }
-
-        function updateGPS(pos) {
-            const lat = pos.coords.latitude;
-            const long = pos.coords.longitude;
-
-            if (initialLat === null) {
-                initialLat = lat; initialLong = long;
-                document.getElementById('current-loc-text').innerText = "LIVE TRACKING";
-            }
-
-            const newX = (long - initialLong) * GPS_SCALE;
-            const newZ = (lat - initialLat) * GPS_SCALE;
-
-            if (userMarker) {
-                const box = document.getElementById('current-loc-box');
-                box.classList.add('moving-highlight');
-                setTimeout(() => box.classList.remove('moving-highlight'), 600);
-
-                gsap.to(userMarker.position, { x: newX, z: newZ, duration: 1.2 });
-                if(moveHalo) gsap.fromTo(moveHalo.scale, {x:1, y:1}, {x:1.8, y:1.8, duration: 0.4, yoyo:true, repeat:1});
-            }
-        }
-
         function initMap() {
             scene = new THREE.Scene(); 
             scene.background = new THREE.Color(0xffffff);
-            camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 1, 5000);
-            camera.position.set(700, 900, 700);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 5000);
+            camera.position.set(800, 1000, 800); 
             camera.lookAt(0,0,0);
             
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
             document.getElementById('canvas-container').appendChild(renderer.domElement);
 
             scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-            scene.add(new THREE.GridHelper(2000, 40, 0xeeeeee, 0xcccccc));
+            const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+            sun.position.set(500, 1000, 500);
+            scene.add(sun);
+            scene.add(new THREE.GridHelper(2000, 40, 0xcccccc, 0xeeeeee));
 
             Object.keys(rooms).forEach(id => {
                 const r = rooms[id];
@@ -179,25 +203,22 @@
                 r.domElement = lbl;
             });
 
-            // USER ELEMENT
             userMarker = new THREE.Group();
-            userMarker.add(new THREE.Mesh(new THREE.SphereGeometry(25), new THREE.MeshPhongMaterial({ color: 0x007bff })));
-            const nose = new THREE.Mesh(new THREE.ConeGeometry(12, 40, 4), new THREE.MeshBasicMaterial({ color: 0xc0392b }));
-            nose.rotation.x = Math.PI/2; nose.position.z = -35;
+            userMarker.add(new THREE.Mesh(new THREE.SphereGeometry(22), new THREE.MeshBasicMaterial({ color: 0x007bff })));
+            const nose = new THREE.Mesh(new THREE.ConeGeometry(10, 30, 4), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
+            nose.rotation.x = Math.PI/2; nose.position.z = -25;
             userMarker.add(nose);
             
-            pulseRing = new THREE.Mesh(new THREE.RingGeometry(35, 55, 32), new THREE.MeshBasicMaterial({ color: 0x007bff, transparent: true, opacity: 0.4, side: THREE.DoubleSide }));
-            pulseRing.rotation.x = Math.PI/2;
-            userMarker.add(pulseRing);
+            const ring = new THREE.Mesh(new THREE.RingGeometry(30, 45, 32), new THREE.MeshBasicMaterial({ color: 0x007bff, transparent: true, opacity: 0.4, side: THREE.DoubleSide }));
+            ring.rotation.x = Math.PI/2;
+            pulseRing = ring;
+            userMarker.add(ring);
 
-            moveHalo = new THREE.Mesh(new THREE.RingGeometry(56, 65, 32), new THREE.MeshBasicMaterial({ color: 0xf1c40f, transparent: true, opacity: 0.6, side: THREE.DoubleSide }));
-            moveHalo.rotation.x = Math.PI/2;
-            userMarker.add(moveHalo);
-
+            userMarker.position.set(0, 15, 0); 
             scene.add(userMarker);
+            
             pathLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xc0392b, linewidth: 5 }));
             scene.add(pathLine);
-
             animate();
         }
 
@@ -205,38 +226,51 @@
             requestAnimationFrame(animate);
             if(pulseRing) {
                 pulseRing.scale.addScalar(0.012);
-                pulseRing.material.opacity -= 0.008;
+                pulseRing.material.opacity -= 0.01;
                 if(pulseRing.scale.x > 2.5) { pulseRing.scale.set(1,1,1); pulseRing.material.opacity = 0.4; }
             }
-            if(selectedRoomId && userMarker) {
+            if(selectedRoomId) {
                 const target = rooms[selectedRoomId];
-                const d = Math.round(userMarker.position.distanceTo(new THREE.Vector3(target.x, 0, target.z)) / 2.5);
+                // Distance calculation updated to reflect current userMarker position
+                const dist = userMarker.position.distanceTo(new THREE.Vector3(target.x, 0, target.z));
+                const d = Math.round(dist / 5); // Scale units to meters
+                
                 document.getElementById('meters').innerText = d;
+                document.getElementById('nav-hud').style.display = 'block';
                 document.getElementById('nav-hud').innerText = `${target.floor} FLOOR: WALK TO ${target.name.toUpperCase()} (${d}m)`;
                 pathLine.geometry.setFromPoints([userMarker.position, new THREE.Vector3(target.x, 5, target.z)]);
             }
             Object.keys(rooms).forEach(id => {
                 const r = rooms[id];
-                const vector = new THREE.Vector3(r.x, 60, r.z).project(camera);
+                const vector = new THREE.Vector3(r.x, 50, r.z).project(camera);
                 r.domElement.style.left = `${(vector.x * .5 + .5) * window.innerWidth}px`;
                 r.domElement.style.top = `${(-(vector.y * .5) + .5) * window.innerHeight}px`;
+                r.domElement.style.display = (vector.z < 1) ? "block" : "none";
             });
             renderer.render(scene, camera);
         }
 
         function handleRoomSelect(id) {
             selectedRoomId = id;
-            document.getElementById('nav-hud').style.display = id ? 'block' : 'none';
+            const hud = document.getElementById('nav-hud');
             Object.values(galleryMeshes).forEach(m => m.scale.set(1,1,1));
-            if(id) gsap.to(galleryMeshes[id].scale, { y: 3, duration: 0.4, ease: "back.out" });
+            if(id) {
+                const target = rooms[id];
+                gsap.to(galleryMeshes[id].scale, { y: 3, duration: 0.4, ease: "bounce.out" });
+                const colorHex = target.floor === "GF" ? "#c0392b" : target.floor === "UF" ? "#2980b9" : "#27ae60";
+                hud.style.borderBottomColor = colorHex;
+            }
         }
 
         function populateDropdown() {
             const select = document.getElementById('destination');
             Object.keys(rooms).sort().forEach(id => {
-                const opt = document.createElement('option');
-                opt.value = id; opt.text = `[${rooms[id].floor}] ${rooms[id].name}`;
-                select.add(opt);
+                if(!rooms[id].isLift) {
+                    const opt = document.createElement('option');
+                    opt.value = id; 
+                    opt.text = `[${rooms[id].floor}] ${rooms[id].name}`;
+                    select.add(opt);
+                }
             });
         }
 
@@ -247,8 +281,14 @@
             });
         }
 
-        function toggleVoice() { voiceEnabled = !voiceEnabled; document.getElementById('voice-btn').innerText = voiceEnabled ? "🔊" : "🔇"; }
-        async function connectBLE() { alert("Searching for Beacon (Requires HTTPS + Chrome/Android)"); }
+        function toggleVoice() {
+            voiceEnabled = !voiceEnabled;
+            document.getElementById('voice-btn').innerText = voiceEnabled ? "🔊" : "🔇";
+        }
+        
+        async function connectBLE() {
+            alert("Bluetooth searching for BM-Wayfinder-Beacon...");
+        }
     </script>
 </body>
 </html>
