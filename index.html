@@ -49,7 +49,6 @@
         }
         #canvas-container { position: absolute; inset: 0; background: #ffffff; }
 
-        /* User Movement Highlight */
         #current-loc-display { margin-top: 10px; font-size: 0.8rem; font-weight: 800; transition: all 0.3s; padding: 4px; border-radius: 4px; }
         .highlight-move { background: var(--bm-gold); color: black !important; }
     </style>
@@ -119,22 +118,19 @@
         };
 
         async function initSensors() {
-            // Request Permission for Orientation (Compass)
             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
                 try {
                     const permission = await DeviceOrientationEvent.requestPermission();
                     if (permission === 'granted') window.addEventListener('deviceorientation', handleOrientation);
-                } catch (e) { alert("Orientation sensor denied."); }
+                } catch (e) { console.error(e); }
             } else { window.addEventListener('deviceorientation', handleOrientation); }
 
-            // Request GPS Location
             if (navigator.geolocation) {
                 navigator.geolocation.watchPosition(updateUserPosition, 
                     (err) => console.warn(err), 
                     { enableHighAccuracy: true, maximumAge: 0 }
                 );
             }
-
             enterMuseum();
         }
 
@@ -148,18 +144,13 @@
         function updateUserPosition(position) {
             const lat = position.coords.latitude;
             const lng = position.coords.longitude;
-
             if (initialLat === null) { initialLat = lat; initialLong = lng; }
-
             const newX = (lng - initialLong) * GPS_SENSITIVITY;
             const newZ = (lat - initialLat) * GPS_SENSITIVITY;
-
             if (userMarker) {
-                // Highlight Location Text on change
                 const display = document.getElementById('current-loc-display');
                 display.classList.add('highlight-move');
                 setTimeout(() => display.classList.remove('highlight-move'), 500);
-
                 gsap.to(userMarker.position, { x: newX, z: newZ, duration: 1.5 });
             }
         }
@@ -202,53 +193,42 @@
                 r.domElement = lbl;
             });
 
-            // USER ELEMENT
             userMarker = new THREE.Group();
             userMarker.add(new THREE.Mesh(new THREE.SphereGeometry(22), new THREE.MeshPhongMaterial({ color: 0x007bff })));
             const nose = new THREE.Mesh(new THREE.ConeGeometry(10, 30, 4), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
             nose.rotation.x = Math.PI/2; nose.position.z = -25;
             userMarker.add(nose);
             
-            const ring = new THREE.Mesh(new THREE.RingGeometry(30, 45, 32), new THREE.MeshBasicMaterial({ color: 0x007bff, transparent: true, opacity: 0.4, side: THREE.DoubleSide }));
-            ring.rotation.x = Math.PI/2;
-            pulseRing = ring;
-            userMarker.add(ring);
+            pulseRing = new THREE.Mesh(new THREE.RingGeometry(30, 45, 32), new THREE.MeshBasicMaterial({ color: 0x007bff, transparent: true, opacity: 0.4, side: THREE.DoubleSide }));
+            pulseRing.rotation.x = Math.PI/2;
+            userMarker.add(pulseRing);
 
             userMarker.position.set(0, 15, 0); 
             scene.add(userMarker);
-            
             pathLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xc0392b, linewidth: 5 }));
             scene.add(pathLine);
             animate();
         }
 
         async function connectBLE() {
-            // Actual Web Bluetooth Implementation
             const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"; 
             const CHARACTERISTIC_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
-
             try {
                 const device = await navigator.bluetooth.requestDevice({
-                    filters: [{ namePrefix: 'BM-' }], // Device name must start with BM-
+                    filters: [{ namePrefix: 'BM-' }], 
                     optionalServices: [SERVICE_UUID]
                 });
-
                 const server = await device.gatt.connect();
                 const service = await server.getPrimaryService(SERVICE_UUID);
                 const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
-
                 await characteristic.startNotifications();
                 document.getElementById('ble-btn').classList.add('active-ble');
-                
                 characteristic.addEventListener('characteristicvaluechanged', (e) => {
                     const val = new TextDecoder().decode(e.target.value);
                     const [x, z] = val.split(',').map(parseFloat);
                     if(!isNaN(x)) gsap.to(userMarker.position, { x, z, duration: 0.8 });
                 });
-                alert("Connected to Beacon: " + device.name);
-            } catch(e) {
-                alert("BLE Error: Ensure Bluetooth is ON and your device name starts with 'BM-'. " + e.message);
-            }
+            } catch(e) { alert("BLE Error: " + e.message); }
         }
 
         function animate() {
@@ -262,13 +242,7 @@
                 const target = rooms[selectedRoomId];
                 const dist = userMarker.position.distanceTo(new THREE.Vector3(target.x, 0, target.z));
                 const d = Math.round(dist / 5);
-                
-                const mDisplay = document.getElementById('meters');
-                if(mDisplay.innerText != d) {
-                    mDisplay.innerText = d;
-                    gsap.fromTo(mDisplay, {scale: 1.2}, {scale: 1, duration: 0.2});
-                }
-                
+                document.getElementById('meters').innerText = d;
                 document.getElementById('nav-hud').style.display = 'block';
                 document.getElementById('nav-hud').innerText = `${target.floor} FLOOR: WALK TO ${target.name.toUpperCase()} (${d}m)`;
                 pathLine.geometry.setFromPoints([userMarker.position, new THREE.Vector3(target.x, 5, target.z)]);
@@ -285,12 +259,12 @@
 
         function handleRoomSelect(id) {
             selectedRoomId = id;
-            Object.values(galleryMeshes).forEach(m => m.scale.set(1,1,1));
             if(id) {
                 const target = rooms[id];
-                gsap.to(galleryMeshes[id].scale, { y: 3, duration: 0.4, ease: "bounce.out" });
                 const colorHex = target.floor === "GF" ? "#c0392b" : target.floor === "UF" ? "#2980b9" : "#27ae60";
                 document.getElementById('nav-hud').style.borderBottomColor = colorHex;
+            } else {
+                document.getElementById('nav-hud').style.display = 'none';
             }
         }
 
