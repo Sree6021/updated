@@ -37,15 +37,7 @@
         .nav-card { bottom: 20px; left: 50%; transform: translateX(-50%); width: 92%; padding: 15px; text-align: center; }
         #meters { font-size: 2.8rem; font-weight: 900; color: var(--bm-red); display: block; line-height: 1; }
         
-        .world-label { 
-            position: absolute; font-size: 10px; font-weight: 900; color: #ffffff;
-            background: rgba(0, 0, 0, 0.7); padding: 3px 6px; border-radius: 4px;
-            pointer-events: none; transform: translate(-50%, -120%); 
-            white-space: nowrap; border: 1px solid rgba(255,255,255,0.2);
-            z-index: 500;
-        }
         #canvas-container { position: absolute; inset: 0; background: #f0f0f0; }
-        #current-loc-display { margin-top: 10px; font-size: 0.8rem; font-weight: 800; }
     </style>
 </head>
 <body>
@@ -53,20 +45,19 @@
     <div id="landing">
         <h1 style="letter-spacing: 5px;">BRITISH MUSEUM</h1>
         <p style="font-weight: 800; opacity: 0.7;">3D WAYFINDER: GPS + ESP32</p>
-        <button class="btn-start" onclick="initSensors()">ENABLE SENSORS & START</button>
+        <button class="btn-start" onclick="initApp()">ENABLE SENSORS & START</button>
     </div>
 
     <div id="map-ui">
         <div id="nav-hud">PLEASE SELECT A GALLERY</div>
         <div class="overlay search-panel">
-            <input type="text" id="search-input" placeholder="🔍 Search Exhibit..." oninput="filterRooms(this.value)">
             <select id="destination" onchange="handleRoomSelect(this.value)">
-                <option value="">-- Select Destination --</option>
+                <option value="">-- Navigate to --</option>
             </select>
         </div>
         
         <div class="controls">
-            <button class="circle-btn" onclick="toggleVoice()" id="voice-btn">🔇</button>
+            <button class="circle-btn" onclick="resetView()">📍</button>
             <button class="circle-btn" id="ble-btn" onclick="connectESP32()">📡</button>
         </div>
 
@@ -75,187 +66,173 @@
             <span style="font-size: 0.7rem; font-weight: 800; color: #999;">METERS REMAINING</span>
             <div id="current-loc-display">AT: <span id="current-loc" style="color: var(--bm-blue);">GREAT COURT</span></div>
         </div>
-        <div id="label-container"></div>
     </div>
 
     <div id="canvas-container"></div>
 
     <script>
-        let scene, camera, renderer, userMarker, pathLine, pulseRing;
-        let selectedRoomId = null;
-        let galleryMeshes = {};
+        // --- 1. CONFIGURATION & DATA ---
+        let scene, camera, renderer, userMarker, pathLine;
         let initialLat = null, initialLong = null;
-        let liveUserPos = new THREE.Vector3(0, 0, 0); 
-        const GPS_SENSITIVITY = 120000; // Adjusted for map scale
+        let selectedRoomId = null;
+        const SCALE = 10; // 1 meter in real life = 10 units in Three.js
 
-        const COLORS = { GF: 0x333333, UF: 0x2980b9, LF: 0x27ae60, GOLD: 0xf39c12 };
-
+        const COLORS = { GF: 0x333333, UF: 0x2980b9, RED: 0xc0392b };
         const rooms = {
-            "4": { name: "Rosetta Stone", x: -280, z: -200, floor: "GF", color: COLORS.GF, img: "https://picsum.photos/id/101/400/600" },
-            "18": { name: "Parthenon Sculptures", x: 380, z: -120, floor: "GF", color: COLORS.GF, img: "https://picsum.photos/id/102/400/600" },
-            "33": { name: "Enlightenment Gallery", x: 500, z: -400, floor: "GF", color: COLORS.GF, img: "https://picsum.photos/id/103/400/600" },
-            "62": { name: "Egyptian Mummies", x: 280, z: 280, floor: "UF", color: COLORS.UF, img: "https://picsum.photos/id/104/400/600" },
-            "95": { name: "Chinese Ceramics", x: -450, z: 50, floor: "UF", color: COLORS.UF, img: "https://picsum.photos/id/106/400/600" },
-            "25": { name: "Africa Gallery", x: 150, z: 550, floor: "LF", color: COLORS.LF, img: "https://picsum.photos/id/107/400/600" },
-            "27": { name: "Mexico", x: -200, z: 450, floor: "LF", color: COLORS.LF, img: "https://picsum.photos/id/108/400/600" },
-            "1": { name: "Enlightenment", x: 120, z: -550, floor: "GF", color: COLORS.GF, img: "https://picsum.photos/id/109/400/600" },
-            "10": { name: "Assyrian Lion Hunt", x: -500, z: -350, floor: "GF", color: COLORS.GF, img: "https://picsum.photos/id/110/400/600" },
-            "70": { name: "Roman Empire", x: 550, z: 150, floor: "UF", color: COLORS.UF, img: "https://picsum.photos/id/111/400/600" }
+            "4": { name: "Rosetta Stone", x: -150, z: -100, floor: "GF" },
+            "18": { name: "Parthenon Sculptures", x: 200, z: -50, floor: "GF" },
+            "62": { name: "Egyptian Mummies", x: 100, z: 150, floor: "UF" }
         };
 
-        async function initSensors() {
-            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-                try { await DeviceOrientationEvent.requestPermission(); } catch (e) { console.error(e); }
-            }
-            window.addEventListener('deviceorientation', (e) => {
-                if (userMarker) {
-                    const heading = e.webkitCompassHeading || (360 - e.alpha);
-                    gsap.to(userMarker.rotation, { y: THREE.MathUtils.degToRad(-heading), duration: 0.1 });
-                }
-            });
-            if (navigator.geolocation) {
-                navigator.geolocation.watchPosition(pos => {
-                    if (initialLat === null) { initialLat = pos.coords.latitude; initialLong = pos.coords.longitude; }
-                    liveUserPos.x = (pos.coords.longitude - initialLong) * GPS_SENSITIVITY;
-                    liveUserPos.z = (pos.coords.latitude - initialLat) * GPS_SENSITIVITY;
-                }, null, { enableHighAccuracy: true });
-            }
-            enterMuseum();
-        }
-
-        // ESP32 BLE LOGIC
-        async function connectESP32() {
-            try {
-                const device = await navigator.bluetooth.requestDevice({
-                    filters: [{ namePrefix: 'BM-' }], // Change to your ESP32's BLE Name
-                    optionalServices: ['6e400001-b5a3-f393-e0a9-e50e24dcca9e'] // Nordic UART or custom
-                });
-                const server = await device.gatt.connect();
-                document.getElementById('ble-btn').classList.add('active-ble');
-                alert("Connected to ESP32: " + device.name);
-            } catch (err) {
-                console.warn("BLE Error: " + err);
-                alert("BLE Connection failed. Ensure ESP32 is on.");
-            }
-        }
-
-        function enterMuseum() {
+        // --- 2. INITIALIZATION ---
+        function initApp() {
             document.getElementById('landing').style.display = 'none';
             document.getElementById('map-ui').style.display = 'block';
-            initMap();
+            
+            initThree();
+            initGPS();
             populateDropdown();
-        }
-
-        function initMap() {
-            scene = new THREE.Scene(); 
-            scene.background = new THREE.Color(0xf8f9fa);
-            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 5000);
-            camera.position.set(700, 900, 700); 
-            camera.lookAt(0,0,0);
-            
-            renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
-            document.getElementById('canvas-container').appendChild(renderer.domElement);
-
-            scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-            scene.add(new THREE.GridHelper(2000, 40, 0xdddddd, 0xeeeeee));
-
-            const loader = new THREE.TextureLoader();
-
-            Object.keys(rooms).forEach(id => {
-                const r = rooms[id];
-                const geo = new THREE.BoxGeometry(90, 140, 25);
-                const materials = [
-                    new THREE.MeshStandardMaterial({ color: r.color }), 
-                    new THREE.MeshStandardMaterial({ color: r.color }), 
-                    new THREE.MeshStandardMaterial({ color: r.color }), 
-                    new THREE.MeshStandardMaterial({ color: r.color }), 
-                    r.img ? new THREE.MeshBasicMaterial({ map: loader.load(r.img) }) : new THREE.MeshStandardMaterial({ color: r.color }),
-                    new THREE.MeshStandardMaterial({ color: r.color }) 
-                ];
-
-                const mesh = new THREE.Mesh(geo, materials);
-                mesh.position.set(r.x, 70, r.z);
-                scene.add(mesh);
-                galleryMeshes[id] = mesh;
-
-                const lbl = document.createElement('div');
-                lbl.className = 'world-label'; lbl.innerText = r.name;
-                document.getElementById('label-container').appendChild(lbl);
-                r.domElement = lbl;
-            });
-
-            // User Marker
-            userMarker = new THREE.Group();
-            const body = new THREE.Mesh(new THREE.SphereGeometry(18), new THREE.MeshPhongMaterial({ color: 0x007bff }));
-            const pointer = new THREE.Mesh(new THREE.ConeGeometry(10, 25, 4), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
-            pointer.rotation.x = Math.PI/2; pointer.position.z = -25;
-            userMarker.add(body, pointer);
-            userMarker.position.set(0, 5, 0); 
-            scene.add(userMarker);
-
-            pulseRing = new THREE.Mesh(new THREE.RingGeometry(22, 38, 32), new THREE.MeshBasicMaterial({ color: 0x007bff, transparent: true, opacity: 0.5, side: THREE.DoubleSide }));
-            pulseRing.rotation.x = Math.PI/2;
-            userMarker.add(pulseRing);
-            
-            pathLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xc0392b, linewidth: 3 }));
-            scene.add(pathLine);
             animate();
         }
 
-        function animate() {
-            requestAnimationFrame(animate);
-            if(pulseRing) {
-                pulseRing.scale.addScalar(0.012);
-                pulseRing.material.opacity -= 0.01;
-                if(pulseRing.scale.x > 3.5) { pulseRing.scale.set(1,1,1); pulseRing.material.opacity = 0.5; }
-            }
-            if(selectedRoomId) {
-                const target = rooms[selectedRoomId];
-                const dist = liveUserPos.distanceTo(new THREE.Vector3(target.x, 0, target.z));
-                document.getElementById('meters').innerText = Math.round(dist/5);
-                pathLine.geometry.setFromPoints([new THREE.Vector3(0, 2, 0), new THREE.Vector3(target.x, 2, target.z)]);
-            }
+        function initThree() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 2000);
+            camera.position.set(0, 300, 200);
+            camera.lookAt(0,0,0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // Lighting
+            const ambient = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambient);
+
+            // Grid Floor
+            const grid = new THREE.GridHelper(1000, 50, 0xcccccc, 0xdddddd);
+            scene.add(grid);
+
+            // User Marker (The "You" sphere)
+            const geo = new THREE.SphereGeometry(8, 32, 32);
+            const mat = new THREE.MeshBasicMaterial({ color: COLORS.RED });
+            userMarker = new THREE.Mesh(geo, mat);
+            scene.add(userMarker);
+
+            // Room Markers
             Object.keys(rooms).forEach(id => {
                 const r = rooms[id];
-                const vector = new THREE.Vector3(r.x, 150, r.z).project(camera);
-                r.domElement.style.left = `${(vector.x * .5 + .5) * window.innerWidth}px`;
-                r.domElement.style.top = `${(-(vector.y * .5) + .5) * window.innerHeight}px`;
-                r.domElement.style.display = (vector.z < 1) ? "block" : "none";
+                const rGeo = new THREE.BoxGeometry(20, 5, 20);
+                const rMat = new THREE.MeshPhongMaterial({ color: 0x2ecc71 });
+                const mesh = new THREE.Mesh(rGeo, rMat);
+                mesh.position.set(r.x, 2.5, r.z);
+                scene.add(mesh);
             });
-            renderer.render(scene, camera);
+        }
+
+        // --- 3. CORE FUNCTIONALITY ---
+        function populateDropdown() {
+            const select = document.getElementById('destination');
+            Object.keys(rooms).forEach(id => {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.innerHTML = rooms[id].name;
+                select.appendChild(opt);
+            });
+        }
+
+        function initGPS() {
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(pos => {
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+
+                    if (!initialLat) { initialLat = lat; initialLong = lon; }
+
+                    // Real-world to Three.js mapping
+                    const x = (lon - initialLong) * 111320 * Math.cos(lat * Math.PI/180);
+                    const z = (lat - initialLat) * 111320;
+
+                    gsap.to(userMarker.position, { 
+                        x: x * SCALE, 
+                        z: -z * SCALE, 
+                        duration: 1 
+                    });
+
+                    updateDistance();
+                }, err => console.warn(err), { enableHighAccuracy: true });
+            }
         }
 
         function handleRoomSelect(id) {
             selectedRoomId = id;
-            if(id) {
-                document.getElementById('nav-hud').style.display = 'block';
-                document.getElementById('nav-hud').innerText = `GO TO: ${rooms[id].name.toUpperCase()}`;
-                gsap.to(galleryMeshes[id].rotation, { y: Math.atan2(rooms[id].x, rooms[id].z), duration: 1.2 });
+            if (!id) return;
+
+            const room = rooms[id];
+            document.getElementById('nav-hud').style.display = 'block';
+            document.getElementById('nav-hud').innerText = `WALK TOWARDS ${room.name.toUpperCase()}`;
+            
+            drawPath();
+        }
+
+        function drawPath() {
+            if (pathLine) scene.remove(pathLine);
+            if (!selectedRoomId) return;
+
+            const room = rooms[selectedRoomId];
+            const points = [
+                userMarker.position,
+                new THREE.Vector3(room.x, 0, room.z)
+            ];
+
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            const material = new THREE.LineDashedMaterial({ color: 0xc0392b, dashSize: 10, gapSize: 5 });
+            pathLine = new THREE.Line(geometry, material);
+            pathLine.computeLineDistances();
+            scene.add(pathLine);
+        }
+
+        function updateDistance() {
+            if (!selectedRoomId) return;
+            const room = rooms[selectedRoomId];
+            const dist = userMarker.position.distanceTo(new THREE.Vector3(room.x, 0, room.z));
+            document.getElementById('meters').innerText = Math.round(dist / SCALE);
+            
+            // Re-draw path as user moves
+            drawPath();
+        }
+
+        async function connectESP32() {
+            try {
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: ['4fafc201-1fb5-459e-8fcc-c5c9c331914b']
+                });
+                const server = await device.gatt.connect();
+                document.getElementById('ble-btn').classList.add('active-ble');
+                alert("Connected to ESP32 Beacon");
+            } catch (e) {
+                console.log("BLE Cancelled or Failed");
             }
         }
 
-        function populateDropdown() {
-            const select = document.getElementById('destination');
-            Object.keys(rooms).sort((a, b) => rooms[a].name.localeCompare(rooms[b].name)).forEach(id => {
-                const opt = document.createElement('option');
-                opt.value = id; opt.text = rooms[id].name;
-                select.add(opt);
-            });
+        function resetView() {
+            gsap.to(camera.position, { x: userMarker.position.x, z: userMarker.position.z + 150, y: 200, duration: 1.5 });
+            camera.lookAt(userMarker.position);
         }
 
-        function filterRooms(v) {
-            const sel = document.getElementById('destination');
-            Array.from(sel.options).forEach(opt => {
-                if(opt.value) opt.style.display = opt.text.toLowerCase().includes(v.toLowerCase()) ? "block" : "none";
-            });
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
         }
 
-        function toggleVoice() {
-            const btn = document.getElementById('voice-btn');
-            btn.innerText = btn.innerText === "🔇" ? "🔊" : "🔇";
-        }
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
     </script>
 </body>
 </html>
